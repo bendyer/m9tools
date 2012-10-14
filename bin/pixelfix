@@ -69,7 +69,7 @@ def process_file(infile, outfile, pixels, columns):
             if x >= width - 4:
                 log.error("Bad column (%d) out of bounds (%d)" % (x, width - 4))
             else:
-                packed_data = struct.pack(">4L", 0, x + 1, height, x + 3)
+                packed_data = struct.pack(">4L", 0, x + 2, height, x + 3)
                 bad_rect_data.append(packed_data)
 
         # Pack parameter data area
@@ -128,6 +128,10 @@ filesto add DNG 1.3 bad pixel interpolation opcodes")
         exit()
 
     for infile in args:
+        # don't re-process wildcarded files
+        if infile.rpartition(".")[2].lower().endswith("-fixed"):
+            continue
+
         # only support -o directive for a single input file
         if opts.outfile and len(args) == 1:
             outfile = opts.outfile

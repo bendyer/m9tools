@@ -28,11 +28,74 @@ import logging as log
 from optparse import OptionParser, OptionGroup
 
 
+def process_file(infile, outfile, pixels, columns):
+    log.debug("Reading from: %s" % infile)
+    log.debug("Writing to: %s" % outfile)
+
+    with open(infile, "rb") as f:
+        img = mdng.M9DNG(f)
+
+        # Set the DNG version to 1.3
+        img.preview_ifd[50706] = (1, 3, 0, 0)
+
+        width = img.main_ifd[256][0]
+        height = img.main_ifd[257][0]
+
+        # Add the appropriate type for OpcodeList1, then set up the pixel list
+        # See p. 91 of the DNG Specification, Version 1.4.0.0.
+        # Note that opcode lists are ALWAYS big-endian regardless of the file
+        # encoding (ibid, p. 83).
+        img.main_ifd.tagtype[51008] = 7
+
+        bad_pixel_data = []
+        bad_rect_data = []
+
+        # We offset all x, y coordinates by 2 because the M9 frame has a two-
+        # pixel black border. There's still the issue of exactly which Bayer
+        # column is responsible for the bad values, but some trial and error
+        # is OK.
+        for bad_pixel in pixels:
+            x, _, y = bad_pixel.partition(',')
+            x, y = int(x), int(y)
+            if x >= width - 4 or y >= height - 4:
+                log.error(
+                    "Bad pixel coordinate (%d, %d) out of bounds (%d, %d)" %
+                    (x, y, width - 4, height - 4))
+            else:
+                packed_data = struct.pack(">2L", x + 2, y + 2)
+                bad_pixel_data.append(packed_data)
+
+        for x in columns:
+            if x >= width - 4:
+                log.error("Bad column (%d) out of bounds (%d)" % (x, width - 4))
+            else:
+                packed_data = struct.pack(">4L", 0, x + 1, height, x + 3)
+                bad_rect_data.append(packed_data)
+
+        # Pack parameter data area
+        param_data = "".join(bad_pixel_data) + "".join(bad_rect_data)
+
+        # Opcode list setup -- one opcode
+        opcode_list_header = struct.pack(">L", 1)
+
+        # FixBadPixels opcode setup -- OpcodeID, OpcodeVersion, FlagBits,
+        # VariableParamLength, BayerPhase, BadPixelCount, BadRectCount
+        opcode_header = struct.pack(">L4B5L", 5, 1, 3, 0, 0, 1,
+            len(param_data) + 12, 0, len(bad_pixel_data), len(bad_rect_data))
+
+        # Generate pixel list from input values
+        img.main_ifd[51008] = opcode_list_header + opcode_header + param_data
+
+        # Write to output file
+        with open(outfile, "wb") as of:
+            img.save(of)
+
+
 if __name__ == "__main__":
-    usage = "usage: %prog [options] DNG_FILE"
+    usage = "usage: %prog [options] DNG_FILE [DNG_FILE_2 ...]"
     parser = OptionParser(usage=usage, version="%prog 1.0",
-        add_help_option=False, description="Processes an M9 DNG file to add \
-DNG 1.3 bad pixel interpolation opcodes")
+        add_help_option=False, description="Processes one or more M9 DNG \
+filesto add DNG 1.3 bad pixel interpolation opcodes")
 
     parser.add_option("--help", action="help",
         help="show this help message and exit")
@@ -64,70 +127,12 @@ DNG 1.3 bad pixel interpolation opcodes")
         log.error("Need to specify DNG_FILE (see pixelfix --help)")
         exit()
 
-    infile = args[0]
-    if opts.outfile:
-        outfile = opts.outfile
-    else:
-        fn, _, ext = infile.rpartition(".")
-        outfile = fn + "-fixed." + ext
+    for infile in args:
+        # only support -o directive for a single input file
+        if opts.outfile and len(args) == 1:
+            outfile = opts.outfile
+        else:
+            fn, _, ext = infile.rpartition(".")
+            outfile = fn + "-fixed." + ext
 
-    log.debug("Reading from: %s" % infile)
-    log.debug("Writing to: %s" % outfile)
-
-    with open(infile, "rb") as f:
-        img = mdng.M9DNG(f)
-
-        # Set the DNG version to 1.3
-        img.preview_ifd[50706] = (1, 3, 0, 0)
-
-        width = img.main_ifd[256][0]
-        height = img.main_ifd[257][0]
-
-        # Add the appropriate type for OpcodeList1, then set up the pixel list
-        # See p. 91 of the DNG Specification, Version 1.4.0.0.
-        # Note that opcode lists are ALWAYS big-endian regardless of the file
-        # encoding (ibid, p. 83).
-        img.main_ifd.tagtype[51008] = 7
-
-        bad_pixel_data = []
-        bad_rect_data = []
-
-        # We offset all x, y coordinates by 2 because the M9 frame has a two-
-        # pixel black border. There's still the issue of exactly which Bayer
-        # column is responsible for the bad values, but some trial and error
-        # is OK.
-        for bad_pixel in opts.pixels:
-            x, _, y = bad_pixel.partition(',')
-            x, y = int(x), int(y)
-            if x >= width or y >= height:
-                log.error(
-                    "Bad pixel coordinate (%d, %d) out of bounds (%d, %d)" %
-                    (x, y, width, height))
-            else:
-                packed_data = struct.pack(">2L", x + 2, y + 2)
-                bad_pixel_data.append(packed_data)
-
-        for x in opts.columns:
-            if x >= width:
-                log.error("Bad column (%d) out of bounds (%d)" % (x, width))
-            else:
-                packed_data = struct.pack(">4L", 0, x, height + 2, x + 3)
-                bad_rect_data.append(packed_data)
-
-        # Pack parameter data area
-        param_data = "".join(bad_pixel_data) + "".join(bad_rect_data)
-
-        # Opcode list setup -- one opcode
-        opcode_list_header = struct.pack(">L", 1)
-
-        # FixBadPixels opcode setup -- OpcodeID, OpcodeVersion, FlagBits,
-        # VariableParamLength, BayerPhase, BadPixelCount, BadRectCount
-        opcode_header = struct.pack(">L4B5L", 5, 1, 3, 0, 0, 1,
-            len(param_data) + 12, 0, len(bad_pixel_data), len(bad_rect_data))
-
-        # Generate pixel list from input values
-        img.main_ifd[51008] = opcode_list_header + opcode_header + param_data
-
-        # Write to output file
-        with open(outfile, "wb") as of:
-            img.save(of)
+        process_file(infile, outfile, opts.pixels, opts.columns)

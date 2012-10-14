@@ -129,7 +129,7 @@ filesto add DNG 1.3 bad pixel interpolation opcodes")
 
     for infile in args:
         # don't re-process wildcarded files
-        if infile.rpartition(".")[2].lower().endswith("-fixed"):
+        if infile.rpartition(".")[0].lower().endswith("-fixed"):
             continue
 
         # only support -o directive for a single input file

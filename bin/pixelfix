@@ -1,0 +1,129 @@
+#!/usr/bin/env python
+
+# Copyright (C) 2012 Ben Dyer
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to
+# deal in the Software without restriction, including without limitation the
+# rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+# sell copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+# FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+# IN THE SOFTWARE.
+
+
+import sys
+import mdng
+import struct
+import logging as log
+from optparse import OptionParser, OptionGroup
+
+
+if __name__ == "__main__":
+    usage = "usage: %prog [options] DNG_FILE"
+    parser = OptionParser(usage=usage, version="%prog 1.0",
+        add_help_option=False, description="Processes an M9 DNG file to add \
+        DNG 1.3 bad pixel interpolation opcodes")
+
+    parser.add_option("--help", action="help",
+        help="show this help message and exit")
+    parser.add_option("-v", "--verbose", action="store_true", dest="verbose",
+        help="displays detailed log output")
+
+    cmd_group = OptionGroup(parser, "Output Options")
+    parser.add_option("-o", "--output-file", type="string", dest="outfile",
+        help="set the output filename (defaults to [DNG_FILE]-fixed.dng",
+        default="")
+
+    cmd_group = OptionGroup(parser, "Bad Pixel Correction Options")
+    cmd_group.add_option("-p", "--pixel", type="string",
+        help="mark an individual pixel identified by X,Y coordinates",
+        dest="pixels", action="append", default=[])
+    cmd_group.add_option("-c", "--column", type="int",
+        help="mark a column identified by an X coordinate",
+        dest="columns", action="append", default=[])
+    parser.add_option_group(cmd_group)
+
+    opts, args = parser.parse_args()
+
+    if opts.verbose:
+        log.basicConfig(format="%(asctime)-15s %(message)s", level=log.DEBUG)
+    else:
+        log.basicConfig(level=log.WARNING)
+
+    if not len(args):
+        log.error("Need to specify DNG_FILE (see pixelfix --help)")
+        exit()
+
+    infile = args[0]
+    if opts.outfile:
+        outfile = opts.outfile
+    else:
+        fn, _, ext = infile.rpartition(".")
+        outfile = fn + "-fixed." + ext
+
+    log.debug("Reading from: %s" % infile)
+    log.debug("Writing to: %s" % outfile)
+
+    with open(infile, "rb") as f:
+        img = mdng.M9DNG(f)
+
+        # Set the DNG version to 1.3
+        img.preview_ifd[50706] = (1, 3, 0, 0)
+
+        width = img.main_ifd[256][0]
+        height = img.main_ifd[257][0]
+
+        # Add the appropriate type for OpcodeList1, then set up the pixel list
+        # See p. 91 of the DNG Specification, Version 1.4.0.0.
+        # Note that opcode lists are ALWAYS big-endian regardless of the file
+        # encoding (ibid, p. 83).
+        img.main_ifd.tagtype[51008] = 7
+
+        bad_pixel_data = []
+        bad_rect_data = []
+
+        for bad_pixel in opts.pixels:
+            x, _, y = bad_pixel.partition(',')
+            x, y = int(x), int(y)
+            if x >= width or y >= height:
+                log.error(
+                    "Bad pixel coordinate (%d, %d) out of bounds (%d, %d)" %
+                    (x, y, width, height))
+            else:
+                packed_data = struct.pack(">2L", x, y)
+                bad_pixel_data.append(packed_data)
+
+        for x in opts.columns:
+            if x >= width:
+                log.error("Bad column (%d) out of bounds (%d)" % (x, width))
+            else:
+                packed_data = struct.pack(">4L", 0, x, height - 1, x + 1)
+                bad_rect_data.append(packed_data)
+
+        # Pack parameter data area
+        param_data = "".join(bad_pixel_data) + "".join(bad_rect_data)
+
+        # Opcode list setup -- one opcode
+        opcode_list_header = struct.pack(">L", 1)
+
+        # FixBadPixels opcode setup -- OpcodeID, OpcodeVersion, FlagBits,
+        # VariableParamLength, BayerPhase, BadPixelCount, BadRectCount
+        opcode_header = struct.pack(">L4B5L", 5, 1, 3, 0, 0, 1,
+            len(param_data) + 12, 0, len(bad_pixel_data), len(bad_rect_data))
+
+        # Generate pixel list from input values
+        img.main_ifd[51008] = opcode_list_header + opcode_header + param_data
+
+        # Write to output file
+        with open(outfile, "wb") as of:
+            img.save(of)

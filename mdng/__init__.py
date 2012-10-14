@@ -289,8 +289,8 @@ class ImageFileDirectory(object):
             else:
                 log.debug(tagdesc + " - value: %s" % repr(self[tag]))
 
-        # For some reason the M9 stores XMP data as undefined rather than
-        # byte -- fix that here.
+        # For some reason older versions of the the M9 firmware store XMP data
+        # as undefined rather than byte -- fix that here.
         if XMP in self.tagtype:
             self.tagtype[XMP] = 1
 

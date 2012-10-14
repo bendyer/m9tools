@@ -32,7 +32,7 @@ if __name__ == "__main__":
     usage = "usage: %prog [options] DNG_FILE"
     parser = OptionParser(usage=usage, version="%prog 1.0",
         add_help_option=False, description="Processes an M9 DNG file to add \
-        DNG 1.3 bad pixel interpolation opcodes")
+DNG 1.3 bad pixel interpolation opcodes")
 
     parser.add_option("--help", action="help",
         help="show this help message and exit")
@@ -92,6 +92,10 @@ if __name__ == "__main__":
         bad_pixel_data = []
         bad_rect_data = []
 
+        # We offset all x, y coordinates by 2 because the M9 frame has a two-
+        # pixel black border. There's still the issue of exactly which Bayer
+        # column is responsible for the bad values, but some trial and error
+        # is OK.
         for bad_pixel in opts.pixels:
             x, _, y = bad_pixel.partition(',')
             x, y = int(x), int(y)
@@ -100,14 +104,14 @@ if __name__ == "__main__":
                     "Bad pixel coordinate (%d, %d) out of bounds (%d, %d)" %
                     (x, y, width, height))
             else:
-                packed_data = struct.pack(">2L", x, y)
+                packed_data = struct.pack(">2L", x + 2, y + 2)
                 bad_pixel_data.append(packed_data)
 
         for x in opts.columns:
             if x >= width:
                 log.error("Bad column (%d) out of bounds (%d)" % (x, width))
             else:
-                packed_data = struct.pack(">4L", 0, x, height - 1, x + 1)
+                packed_data = struct.pack(">4L", 0, x, height + 2, x + 3)
                 bad_rect_data.append(packed_data)
 
         # Pack parameter data area
